@@ -30,6 +30,7 @@ Build/
 *.VC.db
 Thumbs.db
 Desktop.ini
+gcm-diagnose.log
 
 # Unity crash and profiling files
 sysinfo.txt
