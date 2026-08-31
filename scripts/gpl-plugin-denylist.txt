@@ -1,0 +1,11 @@
+# Optional plug-ins excluded from the default runtime copy.
+# Paths are relative to External/VLCUnityWindows/Plugins.
+# This list reduces obvious GPL-only codec/output surface; it is not legal advice
+# and is not a substitute for auditing the exact VideoLAN preview package.
+plugins/access/libdvdnav_plugin.dll
+plugins/access/libdvdread_plugin.dll
+plugins/access/libvnc_plugin.dll
+plugins/codec/libx264_plugin.dll
+plugins/codec/libx26410b_plugin.dll
+plugins/codec/libx265_plugin.dll
+plugins/stream_out/libstream_out_rtp_plugin.dll

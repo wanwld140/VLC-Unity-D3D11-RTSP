@@ -1,0 +1,36 @@
+# Unity generated directories
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Local dependency and build outputs
+External/
+.cache/
+Build/
+
+# IDE / OS
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.user
+*.suo
+*.tmp
+*.pdb
+*.mdb
+*.obj
+*.lib
+*.exp
+*.opendb
+*.VC.db
+Thumbs.db
+Desktop.ini
+
+# Unity crash and profiling files
+sysinfo.txt
+*.stackdump

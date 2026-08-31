@@ -1,0 +1,44 @@
+name: Native bridge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "Native~/**"
+      - "scripts/**"
+      - ".github/workflows/native.yml"
+  pull_request:
+    paths:
+      - "Native~/**"
+      - "scripts/**"
+
+jobs:
+  build-native:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pinned LibVLC package
+        uses: actions/cache@v4
+        with:
+          path: .cache/dependencies/*.nupkg
+          key: libvlc-windows-4.0.0-alpha-20260831
+
+      - name: Install pinned LibVLC SDK
+        shell: pwsh
+        run: ./scripts/setup-dependencies.ps1
+
+      - name: Build native D3D11 bridge
+        shell: pwsh
+        run: ./scripts/build-native.ps1
+
+      - name: Source checks
+        shell: pwsh
+        run: ./scripts/verify-repository.ps1
+
+      - name: Upload native bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLCUnityPlugin-win-x64
+          path: Assets/Plugins/x86_64/VLCUnityPlugin.dll
