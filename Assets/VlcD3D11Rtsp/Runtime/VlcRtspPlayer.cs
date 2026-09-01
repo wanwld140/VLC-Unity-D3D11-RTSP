@@ -1,8 +1,10 @@
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using LibVLCSharp;
 using UnityEngine;
 using UnityEngine.UI;
@@ -38,6 +40,8 @@ namespace VlcD3D11Rtsp
         [SerializeField] private bool forceRtspTcp = true;
         [SerializeField, Range(0, 60000)] private int networkCachingMs = 500;
         [SerializeField] private bool disableAudio = true;
+        [Tooltip("Prepares LibVLC when the scene starts so the first Play click does not load the runtime.")]
+        [SerializeField] private bool warmUpRuntimeOnAwake = true;
 
         [Header("Decode / Output")]
         [SerializeField] private VlcDecodeMode decodeMode = VlcDecodeMode.Auto;
@@ -51,11 +55,16 @@ namespace VlcD3D11Rtsp
         [SerializeField, Min(1f)] private float frameStallTimeoutSeconds = 10f;
         [SerializeField, Min(0.1f)] private float initialReconnectDelaySeconds = 1f;
         [SerializeField, Min(1f)] private float maximumReconnectDelaySeconds = 15f;
+        [Tooltip("Maximum time to wait for LibVLC's asynchronous Stopped event before cleanup continues.")]
+        [SerializeField, Min(0.25f)] private float stopTransitionTimeoutSeconds = 2f;
 
         [Header("Display")]
         [SerializeField] private RawImage targetImage;
         [SerializeField] private AspectRatioFitter aspectRatioFitter;
         [SerializeField] private bool manageAspectRatio = true;
+        [Tooltip("Mirrors the decoded texture left-to-right. The bundled VLC D3D11 output requires this.")]
+        [SerializeField] private bool flipHorizontally = true;
+        [Tooltip("Flips the decoded texture top-to-bottom. The bundled VLC outputs require this.")]
         [SerializeField] private bool flipVertically = true;
         [SerializeField] private bool runInBackground = true;
 
@@ -70,6 +79,15 @@ namespace VlcD3D11Rtsp
         private VlcCpuVideoBuffer cpuBuffer;
         private Texture2D videoTexture;
         private IntPtr externalTexturePointer;
+        private Coroutine transitionCoroutine;
+        private bool transitionRequested;
+        private bool pendingStartAfterRelease;
+        private VlcDecodeMode pendingAttemptMode;
+        private string pendingCompletionStatus = string.Empty;
+        private string activeRequestUrl = string.Empty;
+        private VlcDecodeMode activeRequestMode = VlcDecodeMode.Auto;
+        private bool playbackRequested;
+        private long renderedFrameCount;
         private VlcDecodeMode currentAttemptMode;
         private VlcActiveVideoPath activeVideoPath;
         private int session;
@@ -115,6 +133,8 @@ namespace VlcD3D11Rtsp
         public string LastError => lastError;
         public string Status => status;
         public Texture VideoTexture => videoTexture;
+        public bool IsTransitioning => transitionCoroutine != null;
+        public long RenderedFrameCount => renderedFrameCount;
 
         public string DiagnosticsSummary
         {
@@ -124,6 +144,8 @@ namespace VlcD3D11Rtsp
                 return "requested=" + decodeMode +
                        ", attempt=" + currentAttemptMode +
                        ", active=" + activeVideoPath +
+                       ", transition=" + IsTransitioning +
+                       ", frames=" + renderedFrameCount +
                        ", firstFrame=" + hasFirstFrame +
                        ", hardwareConfirmed=" + HardwareDecodeConfirmed +
                        ", hardwareEvidence=" + EmptyAsNone(hardwareDecodeEvidence) +
@@ -135,12 +157,23 @@ namespace VlcD3D11Rtsp
 
         private void Awake()
         {
+            // Older generated sample scenes left these serialized references empty.
+            // Resolve sibling UI components so decoded frames are still visible.
             if (targetImage == null) targetImage = GetComponent<RawImage>();
             if (aspectRatioFitter == null)
                 aspectRatioFitter = GetComponent<AspectRatioFitter>();
 
+            if (targetImage == null)
+                Debug.LogWarning(
+                    "[VLC RTSP] No RawImage target is assigned; decoded frames will not be visible.",
+                    this);
+
             if (runInBackground) Application.runInBackground = true;
             ApplyUvOrientation();
+
+            // The first Core.Initialize/new LibVLC call may load native DLLs and scan plug-ins.
+            // Do it while the scene starts, rather than inside the user's first button click.
+            if (warmUpRuntimeOnAwake) WarmUpRuntime();
         }
 
         private void OnEnable()
@@ -151,13 +184,15 @@ namespace VlcD3D11Rtsp
         private void OnDisable()
         {
             scheduledStartAt = float.PositiveInfinity;
-            ReleasePlayer();
+            CancelTransition();
+            ReleasePlayerImmediate();
         }
 
         private void OnDestroy()
         {
             shuttingDown = true;
-            ReleasePlayer();
+            CancelTransition();
+            ReleasePlayerImmediate();
 
             if (libVlc != null)
             {
@@ -182,9 +217,14 @@ namespace VlcD3D11Rtsp
                 !applicationPaused && !focusLost && isActiveAndEnabled)
             {
                 scheduledStartAt = float.PositiveInfinity;
-                StartAttempt(DetermineRetryMode());
+                QueuePlaybackTransition(
+                    DetermineRetryMode(),
+                    "Reconnect queued");
             }
 
+            // A transition owns the player while it is stopping/disposing/starting.
+            // Avoid texture callbacks against a player whose native renderer is retiring.
+            if (transitionCoroutine != null) return;
             if (player == null) return;
 
             if (currentAttemptMode == VlcDecodeMode.Cpu)
@@ -211,7 +251,8 @@ namespace VlcD3D11Rtsp
             if (paused)
             {
                 status = "Suspended";
-                ReleasePlayer();
+                CancelTransition();
+                ReleasePlayerImmediate();
             }
             else if (!focusLost)
             {
@@ -221,13 +262,22 @@ namespace VlcD3D11Rtsp
 
         private void OnApplicationFocus(bool focused)
         {
+            // Windows window focus is not an application suspend. Keeping the player alive
+            // avoids a full RTSP reconnect whenever the operator clicks another window.
+            if (runInBackground)
+            {
+                focusLost = false;
+                return;
+            }
+
             focusLost = !focused;
             if (!reconnectOnResumeOrFocus || applicationPaused) return;
 
             if (!focused)
             {
                 status = "Focus lost";
-                ReleasePlayer();
+                CancelTransition();
+                ReleasePlayerImmediate();
             }
             else
             {
@@ -238,6 +288,32 @@ namespace VlcD3D11Rtsp
         /// <summary>Starts a new session using the currently requested mode.</summary>
         public void Play()
         {
+            RequestPlayback(false);
+        }
+
+        private void RequestPlayback(bool forceRestart)
+        {
+            string normalizedUrl = (url ?? string.Empty).Trim();
+            bool sameRequest = playbackRequested &&
+                               string.Equals(activeRequestUrl, normalizedUrl,
+                                   StringComparison.Ordinal) &&
+                               activeRequestMode == decodeMode;
+            bool sessionIsOpeningOrPlaying = player != null || transitionCoroutine != null;
+            if (!forceRestart && sameRequest && sessionIsOpeningOrPlaying &&
+                string.IsNullOrEmpty(lastError))
+            {
+                // PLAY / APPLY is intentionally idempotent. Repeated clicks must not tear
+                // down a healthy RTSP session and rebuild the native renderer.
+                status = hasFirstFrame
+                    ? "Already playing; settings unchanged"
+                    : "Already opening; settings unchanged";
+                return;
+            }
+
+            url = normalizedUrl;
+            activeRequestUrl = normalizedUrl;
+            activeRequestMode = decodeMode;
+            playbackRequested = true;
             autoFallbackUsed = false;
             fallbackReason = string.Empty;
             lastError = string.Empty;
@@ -245,22 +321,24 @@ namespace VlcD3D11Rtsp
             Interlocked.Exchange(ref hardwareConfirmedFlag, 0);
             hardwareDecodeEvidence = string.Empty;
             scheduledStartAt = float.PositiveInfinity;
-            StartAttempt(DetermineInitialMode());
+            QueuePlaybackTransition(
+                DetermineInitialMode(),
+                forceRestart ? "Restart queued" : "Play queued");
         }
 
         /// <summary>Stops playback and cancels automatic reconnect.</summary>
         public void Stop()
         {
+            playbackRequested = false;
             scheduledStartAt = float.PositiveInfinity;
             reconnectAttempt = 0;
-            status = "Stopped";
-            ReleasePlayer();
+            QueueStopTransition("Stop queued", "Stopped");
         }
 
         /// <summary>Rebuilds the LibVLC media session and retries the preferred path.</summary>
         public void RestartPreferred()
         {
-            Play();
+            RequestPlayback(true);
         }
 
         /// <summary>UI-friendly mode setter: 0 Auto, 1 CPU, 2 GPU.</summary>
@@ -273,25 +351,95 @@ namespace VlcD3D11Rtsp
 
         private VlcDecodeMode DetermineInitialMode()
         {
-            return decodeMode == VlcDecodeMode.Auto ? VlcDecodeMode.Gpu : decodeMode;
+            return activeRequestMode == VlcDecodeMode.Auto
+                ? VlcDecodeMode.Gpu
+                : activeRequestMode;
         }
 
         private VlcDecodeMode DetermineRetryMode()
         {
-            if (decodeMode == VlcDecodeMode.Auto)
+            if (activeRequestMode == VlcDecodeMode.Auto)
                 return autoFallbackUsed ? VlcDecodeMode.Cpu : VlcDecodeMode.Gpu;
-            return decodeMode;
+            return activeRequestMode;
         }
 
-        private void StartAttempt(VlcDecodeMode attemptMode)
+        private void QueuePlaybackTransition(VlcDecodeMode attemptMode, string queuedStatus)
+        {
+            pendingStartAfterRelease = true;
+            pendingAttemptMode = attemptMode;
+            pendingCompletionStatus = string.Empty;
+            transitionRequested = true;
+            status = queuedStatus;
+            EnsureTransitionCoroutine();
+        }
+
+        private void QueueStopTransition(string queuedStatus, string completionStatus)
+        {
+            pendingStartAfterRelease = false;
+            pendingCompletionStatus = completionStatus;
+            transitionRequested = true;
+            status = queuedStatus;
+            EnsureTransitionCoroutine();
+        }
+
+        private void EnsureTransitionCoroutine()
+        {
+            if (transitionCoroutine == null && isActiveAndEnabled && !shuttingDown)
+                transitionCoroutine = StartCoroutine(ProcessTransitions());
+        }
+
+        /// <summary>
+        /// Serializes stop/dispose/open work. A newer request replaces the pending one,
+        /// but the current native player is always retired before another is created.
+        /// </summary>
+        private IEnumerator ProcessTransitions()
+        {
+            // StartCoroutine advances an iterator immediately until its first yield. Make
+            // the button callback frame enqueue-only even when runtime warm-up is disabled.
+            yield return null;
+
+            try
+            {
+                while (transitionRequested && isActiveAndEnabled && !shuttingDown)
+                {
+                    bool shouldStart = pendingStartAfterRelease;
+                    VlcDecodeMode attemptMode = pendingAttemptMode;
+                    string completionStatus = pendingCompletionStatus;
+                    transitionRequested = false;
+
+                    yield return ReleasePlayerDeferred();
+
+                    // PLAY may have been clicked again with different settings while the old
+                    // native player was stopping. Only the newest queued request may start.
+                    if (transitionRequested) continue;
+
+                    if (!shouldStart)
+                    {
+                        status = string.IsNullOrEmpty(completionStatus)
+                            ? "Stopped"
+                            : completionStatus;
+                        continue;
+                    }
+
+                    yield return StartAttemptDeferred(attemptMode);
+                }
+            }
+            finally
+            {
+                // Never leave a stale Coroutine handle behind if native cleanup throws.
+                transitionCoroutine = null;
+            }
+        }
+
+        private IEnumerator StartAttemptDeferred(VlcDecodeMode attemptMode)
         {
             if (shuttingDown || !isActiveAndEnabled || applicationPaused || focusLost)
-                return;
+                yield break;
 
-            ReleasePlayer();
             currentAttemptMode = attemptMode;
             activeVideoPath = VlcActiveVideoPath.None;
             hasFirstFrame = false;
+            renderedFrameCount = 0;
             externalTexturePointer = IntPtr.Zero;
             lastDecoderDiagnostic = string.Empty;
             Interlocked.Exchange(ref hardwareConfirmedFlag, 0);
@@ -299,67 +447,55 @@ namespace VlcD3D11Rtsp
 
             Uri streamUri;
             string validationError;
-            if (!TryValidateRtspUrl(url, out streamUri, out validationError))
+            if (!TryValidateRtspUrl(activeRequestUrl, out streamUri, out validationError))
             {
                 FailWithoutRetry(validationError);
-                return;
+                yield break;
             }
 
+            status = "Preparing " + attemptMode + " path";
             string initializationError;
             if (!TryInitializeLibVlc(out initializationError))
             {
                 FailWithoutRetry(initializationError);
-                return;
+                yield break;
             }
+
+            // Keep runtime initialization, MediaPlayer construction, and Play out of one
+            // frame. This removes the compound spike seen by the UI button click.
+            yield return null;
+            if (transitionRequested) yield break;
 
             int newSession = ++session;
             try
             {
                 VlcNativeBridge.PrepareNextMediaPlayer(attemptMode);
                 player = new MediaPlayer(libVlc);
+            }
+            catch (Exception exception)
+            {
+                FailAttemptStart(attemptMode, exception);
+                yield break;
+            }
 
-                if (attemptMode == VlcDecodeMode.Gpu)
-                {
-                    if (!VlcNativeBridge.IsD3D11Renderer())
-                        throw new InvalidOperationException(
-                            "GPU mode requires Unity to run with Direct3D 11. Active renderer: " +
-                            VlcNativeBridge.RendererDescription() + ".");
-                    if (!VlcNativeBridge.HasNativeRenderer(player))
-                        throw new InvalidOperationException(
-                            "The media player did not receive a native D3D11 renderer.");
+            yield return null;
+            if (transitionRequested) yield break;
 
-                    player.EnableHardwareDecoding = true;
-                }
-                else
-                {
-                    player.EnableHardwareDecoding = false;
-                    cpuBuffer = new VlcCpuVideoBuffer();
-                    player.SetVideoCallbacks(
-                        cpuBuffer.LockCallback,
-                        cpuBuffer.UnlockCallback,
-                        cpuBuffer.DisplayCallback);
-                    player.SetVideoFormatCallbacks(cpuBuffer.FormatCallback, null);
-                }
+            try
+            {
+                ConfigureMediaPlayer(attemptMode, newSession);
+            }
+            catch (Exception exception)
+            {
+                FailAttemptStart(attemptMode, exception);
+                yield break;
+            }
 
-                player.NetworkCaching = (uint)Mathf.Clamp(networkCachingMs, 0, 60000);
-                if (disableAudio) player.Mute = true;
-                player.EncounteredError += delegate
-                {
-                    nativeSignals.Enqueue(new PlaybackSignal
-                    {
-                        Session = newSession,
-                        Kind = PlaybackSignalKind.EncounteredError,
-                    });
-                };
-                player.Stopping += delegate
-                {
-                    nativeSignals.Enqueue(new PlaybackSignal
-                    {
-                        Session = newSession,
-                        Kind = PlaybackSignalKind.EndReached,
-                    });
-                };
+            yield return null;
+            if (transitionRequested) yield break;
 
+            try
+            {
                 media = new Media(streamUri);
                 openingStartedAt = Time.realtimeSinceStartup;
                 lastFrameAt = openingStartedAt;
@@ -370,10 +506,74 @@ namespace VlcD3D11Rtsp
             }
             catch (Exception exception)
             {
-                string reason = VlcLogSanitizer.Sanitize(
-                    "Unable to start the " + attemptMode + " path: " + exception.Message);
-                HandlePlaybackFailure(reason);
+                FailAttemptStart(attemptMode, exception);
             }
+        }
+
+        private void ConfigureMediaPlayer(VlcDecodeMode attemptMode, int newSession)
+        {
+            if (attemptMode == VlcDecodeMode.Gpu)
+            {
+                if (!VlcNativeBridge.IsD3D11Renderer())
+                    throw new InvalidOperationException(
+                        "GPU mode requires Unity to run with Direct3D 11. Active renderer: " +
+                        VlcNativeBridge.RendererDescription() + ".");
+                if (!VlcNativeBridge.HasNativeRenderer(player))
+                    throw new InvalidOperationException(
+                        "The media player did not receive a native D3D11 renderer.");
+
+                player.EnableHardwareDecoding = true;
+            }
+            else
+            {
+                player.EnableHardwareDecoding = false;
+                cpuBuffer = new VlcCpuVideoBuffer();
+                player.SetVideoCallbacks(
+                    cpuBuffer.LockCallback,
+                    cpuBuffer.UnlockCallback,
+                    cpuBuffer.DisplayCallback);
+                player.SetVideoFormatCallbacks(cpuBuffer.FormatCallback, null);
+            }
+
+            player.NetworkCaching = (uint)Mathf.Clamp(networkCachingMs, 0, 60000);
+            if (disableAudio) player.Mute = true;
+            player.EncounteredError += delegate
+            {
+                nativeSignals.Enqueue(new PlaybackSignal
+                {
+                    Session = newSession,
+                    Kind = PlaybackSignalKind.EncounteredError,
+                });
+            };
+            player.Stopping += delegate
+            {
+                nativeSignals.Enqueue(new PlaybackSignal
+                {
+                    Session = newSession,
+                    Kind = PlaybackSignalKind.EndReached,
+                });
+            };
+        }
+
+        private void FailAttemptStart(VlcDecodeMode attemptMode, Exception exception)
+        {
+            string reason = VlcLogSanitizer.Sanitize(
+                "Unable to start the " + attemptMode + " path: " + exception.Message);
+            HandlePlaybackFailure(reason);
+        }
+
+        private void WarmUpRuntime()
+        {
+            string error;
+            if (TryInitializeLibVlc(out error))
+            {
+                if (status == "Idle") status = "Ready";
+                return;
+            }
+
+            lastError = error;
+            status = "Runtime warm-up failed";
+            Debug.LogWarning("[VLC RTSP] " + VlcLogSanitizer.Sanitize(error), this);
         }
 
         private bool TryInitializeLibVlc(out string error)
@@ -504,6 +704,7 @@ namespace VlcD3D11Rtsp
         {
             lastFrameAt = Time.realtimeSinceStartup;
             activeVideoPath = path;
+            renderedFrameCount++;
             if (hasFirstFrame) return;
 
             hasFirstFrame = true;
@@ -553,16 +754,17 @@ namespace VlcD3D11Rtsp
             reason = VlcLogSanitizer.Sanitize(reason);
             lastError = reason;
 
-            bool canFallback = decodeMode == VlcDecodeMode.Auto &&
+            bool canFallback = activeRequestMode == VlcDecodeMode.Auto &&
                                currentAttemptMode == VlcDecodeMode.Gpu &&
                                autoFallbackToCpu && !autoFallbackUsed;
             if (canFallback)
             {
                 autoFallbackUsed = true;
                 fallbackReason = reason;
-                status = "GPU unavailable; falling back to CPU";
                 Debug.LogWarning("[VLC RTSP] Auto fallback: " + reason, this);
-                StartAttempt(VlcDecodeMode.Cpu);
+                QueuePlaybackTransition(
+                    VlcDecodeMode.Cpu,
+                    "GPU unavailable; CPU fallback queued");
                 return;
             }
 
@@ -572,17 +774,17 @@ namespace VlcD3D11Rtsp
 
         private void FailWithoutRetry(string reason)
         {
+            playbackRequested = false;
             lastError = VlcLogSanitizer.Sanitize(reason);
             status = "Configuration error";
             scheduledStartAt = float.PositiveInfinity;
             Debug.LogError("[VLC RTSP] " + lastError, this);
             PlaybackFailed?.Invoke(lastError);
-            ReleasePlayer();
+            QueueStopTransition("Configuration error", "Configuration error");
         }
 
         private void ScheduleReconnect(string reason)
         {
-            ReleasePlayer();
             if (!isActiveAndEnabled || applicationPaused || focusLost || shuttingDown)
                 return;
 
@@ -592,14 +794,14 @@ namespace VlcD3D11Rtsp
                 maximumReconnectDelaySeconds,
                 initialReconnectDelaySeconds * exponent);
             scheduledStartAt = Time.realtimeSinceStartup + delay;
-            status = "Reconnect in " + delay.ToString("0.0") + "s";
-            Debug.LogWarning("[VLC RTSP] " + reason + " " + status + ".", this);
+            string reconnectStatus = "Reconnect in " + delay.ToString("0.0") + "s";
+            Debug.LogWarning("[VLC RTSP] " + reason + " " + reconnectStatus + ".", this);
+            QueueStopTransition("Stopping before reconnect", reconnectStatus);
         }
 
         private void ScheduleResumeRestart()
         {
-            if (!isActiveAndEnabled || shuttingDown) return;
-            ReleasePlayer();
+            if (!playbackRequested || !isActiveAndEnabled || shuttingDown) return;
             autoFallbackUsed = false;
             fallbackReason = string.Empty;
             reconnectAttempt = 0;
@@ -607,29 +809,203 @@ namespace VlcD3D11Rtsp
             status = "Resume rebuild scheduled";
         }
 
-        private void ReleasePlayer()
+        private IEnumerator ReleasePlayerDeferred()
+        {
+            ++session;
+            activeVideoPath = VlcActiveVideoPath.None;
+            hasFirstFrame = false;
+            externalTexturePointer = IntPtr.Zero;
+
+            if (player != null)
+            {
+                status = "Stopping previous session";
+                Task<bool> stopTask = null;
+                try
+                {
+                    // StopAsync subscribes to Stopped and calls LibVLC4's non-blocking
+                    // libvlc_media_player_stop_async. Dispose is deliberately delayed.
+                    stopTask = player.StopAsync();
+                }
+                catch (Exception exception)
+                {
+                    lastDecoderDiagnostic = "Stop request failed: " +
+                                            exception.GetType().Name + ".";
+                }
+
+                if (stopTask != null)
+                {
+                    float stopDeadline = Time.realtimeSinceStartup +
+                                         Mathf.Max(0.25f, stopTransitionTimeoutSeconds);
+                    while (!stopTask.IsCompleted &&
+                           Time.realtimeSinceStartup < stopDeadline)
+                    {
+                        yield return null;
+                    }
+
+                    if (!stopTask.IsCompleted)
+                    {
+                        lastDecoderDiagnostic = "Timed out waiting for LibVLC Stopped event.";
+                        Debug.LogWarning("[VLC RTSP] " + lastDecoderDiagnostic, this);
+                    }
+                    else if (stopTask.IsFaulted && stopTask.Exception != null)
+                    {
+                        lastDecoderDiagnostic = "Async stop failed: " +
+                                                stopTask.Exception.GetBaseException()
+                                                    .GetType().Name + ".";
+                    }
+                }
+
+                try
+                {
+                    player.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("MediaPlayer dispose", exception);
+                }
+                finally
+                {
+                    player = null;
+                }
+
+                try
+                {
+                    VlcNativeBridge.QueueRendererCleanup();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Renderer cleanup request", exception);
+                }
+
+                // Give Unity's render thread one frame to retire the native renderer
+                // before destroying its external Texture2D wrapper.
+                yield return null;
+            }
+
+            if (media != null)
+            {
+                try
+                {
+                    media.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Media dispose", exception);
+                }
+                finally
+                {
+                    media = null;
+                }
+                yield return null;
+            }
+
+            if (cpuBuffer != null)
+            {
+                try
+                {
+                    cpuBuffer.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("CPU video buffer dispose", exception);
+                }
+                finally
+                {
+                    cpuBuffer = null;
+                }
+            }
+
+            DestroyVideoTexture();
+            yield return null;
+        }
+
+        private void RecordCleanupWarning(string operation, Exception exception)
+        {
+            lastDecoderDiagnostic = operation + " failed: " +
+                                    exception.GetType().Name + ".";
+            Debug.LogWarning("[VLC RTSP] " + lastDecoderDiagnostic, this);
+        }
+
+        private void CancelTransition()
+        {
+            transitionRequested = false;
+            if (transitionCoroutine == null) return;
+            StopCoroutine(transitionCoroutine);
+            transitionCoroutine = null;
+        }
+
+        /// <summary>
+        /// Synchronous cleanup is reserved for disable/destroy/suspend, where Unity may
+        /// stop advancing coroutines. User-facing Play/Stop transitions use the deferred path.
+        /// </summary>
+        private void ReleasePlayerImmediate()
         {
             ++session;
 
             if (player != null)
             {
-                try { player.Stop(); }
-                catch (Exception) { }
-                player.Dispose();
-                player = null;
-                VlcNativeBridge.QueueRendererCleanup();
+                try
+                {
+                    player.Stop();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Immediate stop", exception);
+                }
+
+                try
+                {
+                    player.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Immediate player dispose", exception);
+                }
+                finally
+                {
+                    player = null;
+                }
+
+                try
+                {
+                    VlcNativeBridge.QueueRendererCleanup();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Immediate renderer cleanup", exception);
+                }
             }
 
             if (media != null)
             {
-                media.Dispose();
-                media = null;
+                try
+                {
+                    media.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Immediate media dispose", exception);
+                }
+                finally
+                {
+                    media = null;
+                }
             }
 
             if (cpuBuffer != null)
             {
-                cpuBuffer.Dispose();
-                cpuBuffer = null;
+                try
+                {
+                    cpuBuffer.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    RecordCleanupWarning("Immediate CPU video buffer dispose", exception);
+                }
+                finally
+                {
+                    cpuBuffer = null;
+                }
             }
 
             DestroyVideoTexture();
@@ -650,9 +1026,11 @@ namespace VlcD3D11Rtsp
         private void ApplyUvOrientation()
         {
             if (targetImage == null) return;
-            targetImage.uvRect = flipVertically
-                ? new Rect(0f, 1f, 1f, -1f)
-                : new Rect(0f, 0f, 1f, 1f);
+            float x = flipHorizontally ? 1f : 0f;
+            float y = flipVertically ? 1f : 0f;
+            float width = flipHorizontally ? -1f : 1f;
+            float height = flipVertically ? -1f : 1f;
+            targetImage.uvRect = new Rect(x, y, width, height);
         }
 
         private static bool TryValidateRtspUrl(

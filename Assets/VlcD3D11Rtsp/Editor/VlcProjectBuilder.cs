@@ -98,6 +98,7 @@ namespace VlcD3D11Rtsp.Editor
         private static void BuildDemoScene()
         {
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            CreateBackgroundCamera();
             CreateEventSystem();
             Canvas canvas = CreateCanvas();
 
@@ -105,10 +106,13 @@ namespace VlcD3D11Rtsp.Editor
             RectTransform videoRect = video.GetComponent<RectTransform>();
             SetAnchors(videoRect, new Vector2(0.02f, 0.18f), new Vector2(0.98f, 0.98f));
             RawImage image = video.AddComponent<RawImage>();
-            image.color = Color.black;
+            // RawImage.color multiplies every video pixel. Black hides valid frames.
+            image.color = Color.white;
             AspectRatioFitter fitter = video.AddComponent<AspectRatioFitter>();
             fitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
             VlcRtspPlayer player = video.AddComponent<VlcRtspPlayer>();
+            AssignObjectReference(player, "targetImage", image);
+            AssignObjectReference(player, "aspectRatioFitter", fitter);
 
             GameObject controls = CreateUiObject("Controls", canvas.transform);
             RectTransform controlsRect = controls.GetComponent<RectTransform>();
@@ -118,19 +122,19 @@ namespace VlcD3D11Rtsp.Editor
 
             InputField urlField = CreateInputField(controls.transform);
             SetAnchors(urlField.GetComponent<RectTransform>(),
-                new Vector2(0.01f, 0.53f), new Vector2(0.55f, 0.94f));
+                new Vector2(0.01f, 0.53f), new Vector2(0.47f, 0.94f));
             urlField.text = "rtsp://127.0.0.1:8554/live";
 
             Dropdown mode = CreateDropdown(controls.transform);
             SetAnchors(mode.GetComponent<RectTransform>(),
-                new Vector2(0.56f, 0.53f), new Vector2(0.74f, 0.94f));
+                new Vector2(0.48f, 0.53f), new Vector2(0.78f, 0.94f));
 
             Button play = CreateButton("Play", controls.transform, "PLAY / APPLY");
             SetAnchors(play.GetComponent<RectTransform>(),
-                new Vector2(0.75f, 0.53f), new Vector2(0.87f, 0.94f));
+                new Vector2(0.79f, 0.53f), new Vector2(0.89f, 0.94f));
             Button stop = CreateButton("Stop", controls.transform, "STOP");
             SetAnchors(stop.GetComponent<RectTransform>(),
-                new Vector2(0.88f, 0.53f), new Vector2(0.99f, 0.94f));
+                new Vector2(0.90f, 0.53f), new Vector2(0.99f, 0.94f));
 
             Text status = CreateText("Status", controls.transform, 15, TextAnchor.MiddleLeft);
             SetAnchors(status.rectTransform,
@@ -152,13 +156,17 @@ namespace VlcD3D11Rtsp.Editor
         private static void BuildSmokeScene()
         {
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            CreateBackgroundCamera();
             Canvas canvas = CreateCanvas();
             GameObject video = CreateUiObject("Video", canvas.transform);
             SetAnchors(video.GetComponent<RectTransform>(), Vector2.zero, Vector2.one);
-            video.AddComponent<RawImage>().color = Color.black;
-            video.AddComponent<AspectRatioFitter>().aspectMode =
-                AspectRatioFitter.AspectMode.FitInParent;
+            RawImage image = video.AddComponent<RawImage>();
+            image.color = Color.white;
+            AspectRatioFitter fitter = video.AddComponent<AspectRatioFitter>();
+            fitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
             VlcRtspPlayer player = video.AddComponent<VlcRtspPlayer>();
+            AssignObjectReference(player, "targetImage", image);
+            AssignObjectReference(player, "aspectRatioFitter", fitter);
 
             VlcSmokeTestController smoke = new GameObject("SmokeTest")
                 .AddComponent<VlcSmokeTestController>();
@@ -176,6 +184,19 @@ namespace VlcD3D11Rtsp.Editor
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1280f, 720f);
             return canvas;
+        }
+
+        private static void CreateBackgroundCamera()
+        {
+            // Screen-space UI does not require a camera, but an empty scene makes the
+            // Unity Game view draw "No cameras rendering" behind the video. A clear-only
+            // camera keeps the sample presentation clean without rendering scene objects.
+            Camera camera = new GameObject("Background Camera", typeof(Camera))
+                .GetComponent<Camera>();
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = Color.black;
+            camera.cullingMask = 0;
+            camera.depth = -100f;
         }
 
         private static void CreateEventSystem()
@@ -214,11 +235,16 @@ namespace VlcD3D11Rtsp.Editor
             Text label = CreateText("Label", root.transform, 15, TextAnchor.MiddleLeft);
             SetAnchors(label.rectTransform, new Vector2(0.05f, 0f), new Vector2(0.9f, 1f));
             label.color = Color.white;
+            label.horizontalOverflow = HorizontalWrapMode.Overflow;
             dropdown.captionText = label;
 
             GameObject template = CreateUiObject("Template", root.transform);
-            SetAnchors(template.GetComponent<RectTransform>(), new Vector2(0f, -3f), new Vector2(1f, 0f));
-            template.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 120f);
+            RectTransform templateRect = template.GetComponent<RectTransform>();
+            // Use the standard fixed-height dropdown template. Unity flips it upward
+            // automatically near the bottom of the screen; three 30 px rows need 90 px.
+            SetAnchors(templateRect, new Vector2(0f, 0f), new Vector2(1f, 0f));
+            templateRect.pivot = new Vector2(0.5f, 1f);
+            templateRect.sizeDelta = new Vector2(0f, 90f);
             template.SetActive(false);
             Image templateImage = template.AddComponent<Image>();
             templateImage.color = new Color(0.12f, 0.13f, 0.16f, 1f);
@@ -240,6 +266,7 @@ namespace VlcD3D11Rtsp.Editor
             item.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 30f);
             Text itemLabel = CreateText("Item Label", item.transform, 14, TextAnchor.MiddleLeft);
             SetAnchors(itemLabel.rectTransform, new Vector2(0.05f, 0f), Vector2.one);
+            itemLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
             item.targetGraphic = itemLabel;
             dropdown.template = template.GetComponent<RectTransform>();
             dropdown.itemText = itemLabel;

@@ -63,8 +63,18 @@ player.DecodeMode = VlcDecodeMode.Auto; // Cpu / Gpu / Auto
 player.Play();
 ```
 
-组件在应用暂停、失焦、首帧超时、画面卡死或 LibVLC 报错后会释放旧
-`MediaPlayer` 并创建新会话。它不会尝试复用息屏前的 RTSP socket。
+`RawImage.color` 必须保持白色，否则 uGUI 会把视频纹理乘成黑色。组件会自动
+查找同一对象上的 `RawImage` 和 `AspectRatioFitter`；Demo 场景同时显式保存了
+这两个引用。随包 D3D11 输出需要水平和垂直翻转，Inspector 中的
+`Flip Horizontally` / `Flip Vertically` 默认均已开启，可按摄像头调整。
+
+相同 URL 和模式重复调用 `Play()` 是幂等的，不会销毁正在工作的会话。
+真正切换 URL/模式时，停止、释放和重新创建会拆到多个 Unity 帧中执行；首次
+LibVLC 初始化默认在 `Awake` 预热，避免把所有原生工作堆在按钮点击帧。
+
+Windows 普通失焦在 `Run In Background` 开启时不会断流。真正的应用暂停、
+首帧超时、画面卡死或 LibVLC 报错仍会释放旧 `MediaPlayer` 并创建新会话；
+组件不会尝试复用暂停前的 RTSP socket。
 
 ## 自动验收
 
@@ -80,12 +90,16 @@ player.Play();
 $env:VLC_RTSP_TEST_URL = 'rtsp://your-test-stream/path'
 $env:VLC_DECODE_MODE = 'Gpu' # Cpu / Gpu / Auto
 $env:VLC_SMOKE_REPORT = "$PWD\Build\Reports\gpu.json"
+$env:VLC_SMOKE_MIN_FRAMES = '30'       # 防止“只有首帧”被误判为通过
+$env:VLC_SMOKE_OBSERVE_SECONDS = '10'  # 首帧后继续观察
+$env:VLC_SMOKE_TIMEOUT_SECONDS = '40'
+$env:VLC_SMOKE_REPEAT_PLAY_AFTER_FIRST_FRAME = '1' # 验证重复 PLAY 不重建
 & .\Build\Smoke\VlcD3D11RtspSmoke.exe -screen-fullscreen 0 -screen-width 960 -screen-height 540
 ```
 
 报告分别记录请求模式、实际路径、首帧耗时、Auto 回退原因，以及是否获得
-硬解日志证据。请依次跑 `Cpu`、`Gpu`、`Auto`，并在目标显卡和目标 RTSP
-编码格式上复核。
+硬解日志证据和当前会话的连续渲染帧数。请依次跑 `Cpu`、`Gpu`、`Auto`，
+并在目标显卡和目标 RTSP 编码格式上复核。
 
 ## 目录
 
@@ -94,9 +108,6 @@ $env:VLC_SMOKE_REPORT = "$PWD\Build\Reports\gpu.json"
 - `Native~/VLCUnityPlugin`：可审计的 VLC-Unity D3D11 原生源码
 - `scripts`：依赖、原生 DLL、Unity player 和仓库校验脚本
 - `docs`：架构、验证和依赖锁定说明
-
-本机最终验收记录见
-[`docs/VALIDATION_RESULTS_2026-08-31.md`](docs/VALIDATION_RESULTS_2026-08-31.md)。
 
 ## 许可与分发
 

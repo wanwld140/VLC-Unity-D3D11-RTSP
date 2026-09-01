@@ -14,8 +14,8 @@ that matters to the product.
 
 | Case | Required evidence |
 |---|---|
-| CPU | first frame, `CpuMemoryBuffer`, CPU callback counters advancing |
-| GPU | first frame, `D3D11NativeTexture`, no CPU callback buffer |
+| CPU | first frame, `CpuMemoryBuffer`, `RenderedFrameCount` and CPU callback counters advancing during an observation window |
+| GPU | first frame, `D3D11NativeTexture`, `RenderedFrameCount` advancing, no CPU callback buffer |
 | Auto / GPU available | same native path as GPU |
 | Auto / GPU unavailable | `CpuMemoryBuffer` plus a non-empty fallback reason |
 | Suspend/resume | a new media session and a second first frame |
@@ -25,3 +25,7 @@ that matters to the product.
 `HardwareDecodeConfirmed` requires a LibVLC hardware-decoder log message. A
 native D3D11 output texture alone is not sufficient evidence because software
 decoding can also feed a GPU video output.
+
+Set `VLC_SMOKE_MIN_FRAMES` and `VLC_SMOKE_OBSERVE_SECONDS` for continuous-frame
+acceptance. A report that only proves the first frame is insufficient for live
+monitoring playback.

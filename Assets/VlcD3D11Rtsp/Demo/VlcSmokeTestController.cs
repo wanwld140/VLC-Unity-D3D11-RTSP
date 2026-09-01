@@ -16,19 +16,28 @@ namespace VlcD3D11Rtsp
         private const string ReportVariable = "VLC_SMOKE_REPORT";
         private const string RestartVariable = "VLC_SMOKE_RESTART_AFTER_FIRST_FRAME";
         private const string TimeoutVariable = "VLC_SMOKE_TIMEOUT_SECONDS";
+        private const string MinimumFramesVariable = "VLC_SMOKE_MIN_FRAMES";
+        private const string ObserveSecondsVariable = "VLC_SMOKE_OBSERVE_SECONDS";
+        private const string RepeatPlayVariable = "VLC_SMOKE_REPEAT_PLAY_AFTER_FIRST_FRAME";
 
         [SerializeField] private VlcRtspPlayer player;
         [SerializeField, Min(5f)] private float timeoutSeconds = 40f;
         [SerializeField, Min(0f)] private float gpuEvidenceGraceSeconds = 3f;
+        [SerializeField, Min(1)] private int minimumFrames = 1;
+        [SerializeField, Min(0f)] private float observeSeconds;
 
         private float startedAt;
         private float firstFrameAt = -1f;
         private float secondFrameAt = -1f;
         private float scheduledRestartAt = -1f;
+        private float scheduledRepeatPlayAt = -1f;
         private string reportPath;
         private int firstFrameCount;
         private bool requireSessionRestart;
         private bool restartIssued;
+        private bool repeatSamePlay;
+        private bool repeatPlayIssued;
+        private long framesBeforeRepeatPlay;
         private bool finished;
 
         [Serializable]
@@ -47,7 +56,9 @@ namespace VlcD3D11Rtsp
             public string graphicsDevice;
             public float firstFrameSeconds;
             public int firstFrameCount;
+            public long renderedFrameCount;
             public bool sessionRestartVerified;
+            public bool repeatPlayVerified;
             public float recoveryFrameSeconds;
             public float totalSeconds;
             public string diagnostics;
@@ -64,6 +75,11 @@ namespace VlcD3D11Rtsp
                 "true",
                 StringComparison.OrdinalIgnoreCase) ||
                 Environment.GetEnvironmentVariable(RestartVariable) == "1";
+            repeatSamePlay = string.Equals(
+                Environment.GetEnvironmentVariable(RepeatPlayVariable),
+                "true",
+                StringComparison.OrdinalIgnoreCase) ||
+                Environment.GetEnvironmentVariable(RepeatPlayVariable) == "1";
             float parsedTimeout;
             if (float.TryParse(Environment.GetEnvironmentVariable(TimeoutVariable),
                     System.Globalization.NumberStyles.Float,
@@ -71,6 +87,22 @@ namespace VlcD3D11Rtsp
                     out parsedTimeout) && parsedTimeout >= 5f)
             {
                 timeoutSeconds = parsedTimeout;
+            }
+
+            int parsedMinimumFrames;
+            if (int.TryParse(Environment.GetEnvironmentVariable(MinimumFramesVariable),
+                    out parsedMinimumFrames) && parsedMinimumFrames >= 1)
+            {
+                minimumFrames = parsedMinimumFrames;
+            }
+
+            float parsedObserveSeconds;
+            if (float.TryParse(Environment.GetEnvironmentVariable(ObserveSecondsVariable),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out parsedObserveSeconds) && parsedObserveSeconds >= 0f)
+            {
+                observeSeconds = parsedObserveSeconds;
             }
 
             if (player == null)
@@ -119,7 +151,28 @@ namespace VlcD3D11Rtsp
                 return;
             }
 
+            if (scheduledRepeatPlayAt >= 0f && !repeatPlayIssued &&
+                Time.realtimeSinceStartup >= scheduledRepeatPlayAt)
+            {
+                repeatPlayIssued = true;
+                framesBeforeRepeatPlay = player.RenderedFrameCount;
+                player.Play();
+                return;
+            }
+
             if (requireSessionRestart && secondFrameAt < 0f) return;
+            if (repeatSamePlay)
+            {
+                if (!repeatPlayIssued ||
+                    player.RenderedFrameCount <= framesBeforeRepeatPlay) return;
+                if (firstFrameCount != 1)
+                {
+                    Finish(false, "Repeated Play rebuilt the active session.", 2);
+                    return;
+                }
+            }
+            if (player.RenderedFrameCount < minimumFrames) return;
+            if (Time.realtimeSinceStartup - firstFrameAt < observeSeconds) return;
 
             bool needsEvidenceGrace = player.CurrentAttemptMode == VlcDecodeMode.Gpu &&
                                       !player.HardwareDecodeConfirmed &&
@@ -136,6 +189,8 @@ namespace VlcD3D11Rtsp
                 firstFrameAt = Time.realtimeSinceStartup;
                 if (requireSessionRestart)
                     scheduledRestartAt = firstFrameAt + 0.5f;
+                if (repeatSamePlay)
+                    scheduledRepeatPlayAt = firstFrameAt + 0.5f;
             }
             else if (restartIssued && secondFrameAt < 0f)
             {
@@ -176,7 +231,11 @@ namespace VlcD3D11Rtsp
                 graphicsDevice = SystemInfo.graphicsDeviceType.ToString(),
                 firstFrameSeconds = firstFrameAt < 0f ? -1f : firstFrameAt - startedAt,
                 firstFrameCount = firstFrameCount,
+                renderedFrameCount = player == null ? 0 : player.RenderedFrameCount,
                 sessionRestartVerified = requireSessionRestart && secondFrameAt >= 0f,
+                repeatPlayVerified = repeatSamePlay && repeatPlayIssued &&
+                                     firstFrameCount == 1 && player != null &&
+                                     player.RenderedFrameCount > framesBeforeRepeatPlay,
                 recoveryFrameSeconds = secondFrameAt < 0f
                     ? -1f
                     : secondFrameAt - scheduledRestartAt,
