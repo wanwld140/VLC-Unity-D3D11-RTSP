@@ -33,10 +33,22 @@ if ($nativeSource -notmatch 'libvlc_video_set_output_callbacks') {
     $failures.Add('Native D3D11 source does not register LibVLC output callbacks.')
 }
 
-$trackedRuntime = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'External') -Recurse -File -ErrorAction SilentlyContinue |
-    Measure-Object -Property Length -Sum
-if ($trackedRuntime.Count -gt 0) {
-    Write-Host "Local untracked LibVLC runtime: $($trackedRuntime.Count) files, $($trackedRuntime.Sum) bytes."
+$externalRoot = Join-Path $repoRoot 'External'
+# Fresh clones intentionally do not contain External/ until setup-dependencies.ps1 runs.
+# Check the directory first so StrictMode does not turn the missing optional path into a null-property error.
+$runtimeFiles = @(
+    if (Test-Path -LiteralPath $externalRoot) {
+        Get-ChildItem -LiteralPath $externalRoot -Recurse -File
+    }
+)
+$runtimeFileCount = $runtimeFiles.Count
+$runtimeByteCount = if ($runtimeFileCount -gt 0) {
+    ($runtimeFiles | Measure-Object -Property Length -Sum).Sum
+} else {
+    0
+}
+if ($runtimeFileCount -gt 0) {
+    Write-Host "Local untracked LibVLC runtime: $runtimeFileCount files, $runtimeByteCount bytes."
 }
 
 if ($failures.Count -gt 0) {
