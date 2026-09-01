@@ -3,6 +3,11 @@
 This repository contains or builds against the following projects. The list is
 provided for engineering traceability and is not legal advice.
 
+The repository's root MIT License applies only to original material authored
+for this project. It does not relicense the derived or third-party components
+listed below; those components remain subject to their respective notices and
+license terms.
+
 ## VLC-Unity native rendering plug-in
 
 - Upstream: <https://code.videolan.org/videolan/vlc-unity>

@@ -111,9 +111,11 @@ $env:VLC_SMOKE_REPEAT_PLAY_AFTER_FIRST_FRAME = '1' # 验证重复 PLAY 不重建
 
 ## 许可与分发
 
-仓库使用 LGPL-2.1-or-later。原生桥派生自 VideoLAN VLC-Unity；托管 DLL
-来自 LibVLCSharp。具体固定版本、哈希和修改说明见
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+本仓库原创代码使用 [MIT License](LICENSE)。原生桥派生自 VideoLAN
+VLC-Unity，继续使用 LGPL-2.1-or-later；托管 DLL 来自 LibVLCSharp，
+LibVLC 运行库及其他第三方内容也不因项目采用 MIT 而改变原许可。
+具体适用范围、固定版本、哈希和修改说明见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 [`LICENSES`](LICENSES)。
 
 LibVLC 二进制包可能包含不同许可的可选 plug-in。默认依赖脚本会移除
 `scripts/gpl-plugin-denylist.txt` 中列出的明显可选项，但这不构成完整法律
