@@ -17,6 +17,12 @@ PluginImporter:
       enabled: 0
       settings: {}
   - first:
+      Android: Android
+    second:
+      enabled: 1
+      settings:
+        CPU: AnyCPU
+  - first:
       Editor: Editor
     second:
       enabled: 1

@@ -14,5 +14,6 @@ namespace VlcD3D11Rtsp
         None = 0,
         CpuMemoryBuffer = 1,
         D3D11NativeTexture = 2,
+        AndroidNativeTexture = 3,
     }
 }

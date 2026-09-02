@@ -10,9 +10,31 @@ $repoRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $sourceRoot = Join-Path $repoRoot 'Native~\VLCUnityPlugin'
 $sdkRoot = Join-Path $repoRoot 'External\VLCUnityWindows\Plugins\sdk'
 $outputRoot = Join-Path $repoRoot 'Build\Native'
+$stagingRoot = Join-Path $outputRoot 'staging'
 $pluginOutput = Join-Path $repoRoot 'Assets\Plugins\x86_64\VLCUnityPlugin.dll'
+$stagedPluginOutput = Join-Path $stagingRoot 'VLCUnityPlugin.dll'
 $pdbOutput = Join-Path $outputRoot 'VLCUnityPlugin.pdb'
 $importLibraryOutput = Join-Path $outputRoot 'VLCUnityPlugin.lib'
+
+function Assert-PluginReplaceable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None)
+    }
+    catch {
+        throw "VLCUnityPlugin.dll is in use and cannot be replaced: $Path. Close every Unity Editor and VLC Unity player that has this project loaded, then retry. The existing plug-in was not changed."
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'include\vlc\vlc.h'))) {
     throw 'LibVLC SDK is missing. Run scripts/setup-dependencies.ps1 first.'
@@ -27,7 +49,8 @@ if (-not $vsInstall) { throw 'Visual Studio C++ x64 tools were not found.' }
 $vsDevCmd = Join-Path $vsInstall 'Common7\Tools\VsDevCmd.bat'
 if (-not (Test-Path -LiteralPath $vsDevCmd)) { throw "VsDevCmd.bat was not found: $vsDevCmd" }
 
-New-Item -ItemType Directory -Force -Path $outputRoot,(Split-Path -Parent $pluginOutput) | Out-Null
+Assert-PluginReplaceable -Path $pluginOutput
+New-Item -ItemType Directory -Force -Path $outputRoot,$stagingRoot,(Split-Path -Parent $pluginOutput) | Out-Null
 $optimization = if ($DebugBuild) { '/Od /Zi /D_DEBUG' } else { '/O2 /DNDEBUG' }
 $responsePath = Join-Path $outputRoot 'build.rsp'
 $sources = @(
@@ -44,7 +67,7 @@ $response = @(
     ('/I"' + $sourceRoot + '"'),
     ('/I"' + (Join-Path $sdkRoot 'include') + '"')
 ) + $sources + @(
-    '/link', '/DLL', ('/OUT:"' + $pluginOutput + '"'), ('/PDB:"' + $pdbOutput + '"'),
+    '/link', '/DLL', ('/OUT:"' + $stagedPluginOutput + '"'), ('/PDB:"' + $pdbOutput + '"'),
     ('/IMPLIB:"' + $importLibraryOutput + '"'),
     '/Brepro',
     '/DELAYLOAD:libvlc.dll', 'delayimp.lib',
@@ -63,11 +86,11 @@ if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCO
 
 $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
 if (-not $dumpbin) {
-    $dumpCommand = 'call "' + $vsDevCmd + '" -arch=x64 -host_arch=x64 && dumpbin /exports "' + $pluginOutput + '"'
+    $dumpCommand = 'call "' + $vsDevCmd + '" -arch=x64 -host_arch=x64 && dumpbin /exports "' + $stagedPluginOutput + '"'
     $exports = & $env:ComSpec /d /s /c $dumpCommand
 }
 else {
-    $exports = & $dumpbin.Source /exports $pluginOutput
+    $exports = & $dumpbin.Source /exports $stagedPluginOutput
 }
 
 $requiredExports = @(
@@ -85,6 +108,18 @@ foreach ($required in $requiredExports) {
     }
 }
 
+Assert-PluginReplaceable -Path $pluginOutput
+try {
+    Copy-Item -LiteralPath $stagedPluginOutput -Destination $pluginOutput -Force
+}
+catch {
+    throw "Native build passed and the staged DLL remains at $stagedPluginOutput, but the Unity plug-in could not be replaced. Close every Unity Editor and VLC Unity player that has this project loaded, then retry. The existing plug-in may still be in use."
+}
+
+$stagedHash = (Get-FileHash -LiteralPath $stagedPluginOutput -Algorithm SHA256).Hash
 $hash = (Get-FileHash -LiteralPath $pluginOutput -Algorithm SHA256).Hash
+if ($hash -ne $stagedHash) {
+    throw 'The installed native plug-in hash does not match the verified staged DLL.'
+}
 Write-Host "Native bridge ready: $pluginOutput"
 Write-Host "SHA-256: $hash"

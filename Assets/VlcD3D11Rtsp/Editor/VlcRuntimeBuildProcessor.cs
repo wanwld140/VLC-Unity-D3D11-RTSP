@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace VlcD3D11Rtsp.Editor
 {
-    /// <summary>Copies the pinned private LibVLC runtime beside every Windows player.</summary>
+    /// <summary>Copies local VLC and optional Hikvision runtimes beside a Windows player.</summary>
     public sealed class VlcRuntimeBuildProcessor : IPostprocessBuildWithReport
     {
         public int callbackOrder => 100;
@@ -30,6 +30,16 @@ namespace VlcD3D11Rtsp.Editor
                 Path.GetFileNameWithoutExtension(executable) + "_Data");
             string destination = Path.Combine(dataDirectory, "VLCUnityWindows");
             CopyDirectory(source, destination);
+
+            // 海康 SDK 是用户本地提供的专有依赖；未安装时 VLC-only 构建仍然有效。
+            string hikvisionSource = Path.Combine(
+                projectRoot, "External", "HikvisionWindows");
+            if (Directory.Exists(hikvisionSource))
+            {
+                string hikvisionDestination = Path.Combine(
+                    dataDirectory, "HikvisionWindows");
+                CopyDirectory(hikvisionSource, hikvisionDestination);
+            }
         }
 
         private static void CopyDirectory(string source, string destination)

@@ -1,0 +1,46 @@
+{
+  "component": "VLC RTSP Android ARM64 runtime",
+  "unity": "2021.3.28f1c1",
+  "android": {
+    "abi": "arm64-v8a",
+    "minimumProjectApi": 29,
+    "defaultGraphicsApi": "OpenGLES3",
+    "scriptingBackend": "IL2CPP"
+  },
+  "binaries": {
+    "LibVLCSharp.dll": "260EC9F6DCFD5DFC57372D3B1B1167A44D62F3A068BCB1D8EED541D4F529275B",
+    "vlc-android-java.aar": "864E5A261EA71F3FF4A8F63789F02008180BA0A448F96C6AC364CF0FA1BB315F",
+    "libvlc.so": "89726D8B607C373CA9394D2564D00273CFC83F0D1469ECB999F9878EB5F8925E",
+    "libVLCUnityPlugin.so": "B4E52BC78C2967901CA8C46EFB43DCD3F0140E5064A91067199CBA643E7CE62D"
+  },
+  "sources": {
+    "vlc-unity": "f2bbedd5bc84f3e1e979a543f4341a9b9c370dff",
+    "vlc-android": "cfee6d308b77007d1278e41fc2fc0a09665e6d8a",
+    "libvlcjni": "6269075a5d9860bd4a08d54bdf1c3d4298a97196",
+    "vlc": "275bbed0a08433de13c007bf00f1aad2ebd7acbb",
+    "LibVLCSharp": "333a98a54095c94c966c4fca117cd11cffeee919"
+  },
+  "previousPackageValidation": {
+    "androidScripts": "passed",
+    "il2cppApkBuild": "passed",
+    "apkNativeHashes": "passed",
+    "internetPermission": "passed",
+    "physicalDevicePlayback": {
+      "status": "passed",
+      "evidence": "user-reported Android hardware playback pass in source project lysc-prj-20241205-231-main-20260828"
+    }
+  },
+  "currentProjectValidation": {
+    "androidScripts": "passed",
+    "il2cppApkBuild": "passed",
+    "apkNativeHashes": "passed",
+    "internetPermission": "passed",
+    "physicalDeviceInstallAndLaunch": {
+      "status": "passed",
+      "device": "Xiaomi 24129PN74C, Android 16, arm64-v8a"
+    },
+    "openGles3AutoNativeFirstFrame": "passed on public RTSP test stream",
+    "continuousPlayback": "inconclusive: public stream stalled after the first-frame pass",
+    "fullModeAndRecoveryRetest": "pending"
+  }
+}

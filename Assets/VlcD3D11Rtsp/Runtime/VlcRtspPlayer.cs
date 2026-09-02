@@ -1,4 +1,10 @@
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+#if UNITY_ANDROID && !UNITY_EDITOR
+#define VLCUNITY_ANDROID
+#elif UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+#define VLCUNITY_WINDOWS
+#endif
+
+#if VLCUNITY_ANDROID || VLCUNITY_WINDOWS
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
@@ -12,14 +18,18 @@ using UnityEngine.UI;
 namespace VlcD3D11Rtsp
 {
     /// <summary>
-    /// Windows RTSP player with an explicit CPU, GPU, or automatic video path.
-    /// GPU mode exposes LibVLC 4's D3D11 output texture directly to Unity.
+    /// Windows x64 and Android ARM64 RTSP player with an explicit CPU, GPU,
+    /// or automatic video path. GPU mode exposes LibVLC 4's native output
+    /// texture directly to Unity through D3D11 or the Android render bridge.
     /// CPU mode uses LibVLC video callbacks and uploads completed RV32 frames.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(RawImage))]
     public sealed class VlcRtspPlayer : MonoBehaviour
     {
+        public const string DefaultTestUrl =
+            "rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream";
+
         private enum PlaybackSignalKind
         {
             EncounteredError,
@@ -35,7 +45,7 @@ namespace VlcD3D11Rtsp
         private static bool coreInitialized;
 
         [Header("Stream")]
-        [SerializeField] private string url = "rtsp://127.0.0.1:8554/live";
+        [SerializeField] private string url = DefaultTestUrl;
         [SerializeField] private bool playOnEnable;
         [SerializeField] private bool forceRtspTcp = true;
         [SerializeField, Range(0, 60000)] private int networkCachingMs = 500;
@@ -78,6 +88,9 @@ namespace VlcD3D11Rtsp
         private Media media;
         private VlcCpuVideoBuffer cpuBuffer;
         private Texture2D videoTexture;
+#if VLCUNITY_ANDROID
+        private RenderTexture androidOutputTexture;
+#endif
         private IntPtr externalTexturePointer;
         private Coroutine transitionCoroutine;
         private bool transitionRequested;
@@ -132,7 +145,17 @@ namespace VlcD3D11Rtsp
         public string FallbackReason => fallbackReason;
         public string LastError => lastError;
         public string Status => status;
-        public Texture VideoTexture => videoTexture;
+        public Texture VideoTexture
+        {
+            get
+            {
+#if VLCUNITY_ANDROID
+                return androidOutputTexture != null ? androidOutputTexture : videoTexture;
+#else
+                return videoTexture;
+#endif
+            }
+        }
         public bool IsTransitioning => transitionCoroutine != null;
         public long RenderedFrameCount => renderedFrameCount;
 
@@ -262,6 +285,23 @@ namespace VlcD3D11Rtsp
 
         private void OnApplicationFocus(bool focused)
         {
+#if VLCUNITY_ANDROID
+            // Android can report backgrounding/screen-off as focus loss before Pause.
+            // Retire the old socket and renderer so resume always creates a new session.
+            focusLost = !focused;
+            if (!reconnectOnResumeOrFocus || applicationPaused) return;
+
+            if (!focused)
+            {
+                status = "Focus lost";
+                CancelTransition();
+                ReleasePlayerImmediate();
+            }
+            else
+            {
+                ScheduleResumeRestart();
+            }
+#else
             // Windows window focus is not an application suspend. Keeping the player alive
             // avoids a full RTSP reconnect whenever the operator clicks another window.
             if (runInBackground)
@@ -283,6 +323,7 @@ namespace VlcD3D11Rtsp
             {
                 ScheduleResumeRestart();
             }
+#endif
         }
 
         /// <summary>Starts a new session using the currently requested mode.</summary>
@@ -469,7 +510,9 @@ namespace VlcD3D11Rtsp
             int newSession = ++session;
             try
             {
+#if VLCUNITY_WINDOWS
                 VlcNativeBridge.PrepareNextMediaPlayer(attemptMode);
+#endif
                 player = new MediaPlayer(libVlc);
             }
             catch (Exception exception)
@@ -514,6 +557,7 @@ namespace VlcD3D11Rtsp
         {
             if (attemptMode == VlcDecodeMode.Gpu)
             {
+#if VLCUNITY_WINDOWS
                 if (!VlcNativeBridge.IsD3D11Renderer())
                     throw new InvalidOperationException(
                         "GPU mode requires Unity to run with Direct3D 11. Active renderer: " +
@@ -521,6 +565,11 @@ namespace VlcD3D11Rtsp
                 if (!VlcNativeBridge.HasNativeRenderer(player))
                     throw new InvalidOperationException(
                         "The media player did not receive a native D3D11 renderer.");
+#elif VLCUNITY_ANDROID
+                if (!VLCAndroidInitialization.EnsureInitialized())
+                    throw new InvalidOperationException(
+                        "The Android native texture renderer did not initialize.");
+#endif
 
                 player.EnableHardwareDecoding = true;
             }
@@ -580,8 +629,17 @@ namespace VlcD3D11Rtsp
         {
             error = null;
             string runtimeBasePath;
+#if VLCUNITY_ANDROID
+            runtimeBasePath = Application.dataPath;
+            if (!VLCAndroidInitialization.EnsureInitialized())
+            {
+                error = "VLC Android native rendering plug-in initialization failed.";
+                return false;
+            }
+#else
             if (!VlcWindowsRuntime.TryPrepare(out runtimeBasePath, out error))
                 return false;
+#endif
 
             try
             {
@@ -591,8 +649,9 @@ namespace VlcD3D11Rtsp
                     coreInitialized = true;
                 }
 
-                if (!VlcNativeBridge.TryInitialize(out error))
-                    return false;
+#if VLCUNITY_WINDOWS
+                if (!VlcNativeBridge.TryInitialize(out error)) return false;
+#endif
 
                 if (libVlc == null)
                 {
@@ -603,6 +662,10 @@ namespace VlcD3D11Rtsp
                     };
                     if (forceRtspTcp) arguments.Add("--rtsp-tcp");
                     if (disableAudio) arguments.Add("--no-audio");
+#if VLCUNITY_ANDROID
+                    arguments.Add("--network-caching=" +
+                                  Mathf.Clamp(networkCachingMs, 0, 60000));
+#endif
                     libVlc = new LibVLC(false, arguments.ToArray());
                     libVlc.Log += OnLibVlcLog;
                 }
@@ -624,6 +687,43 @@ namespace VlcD3D11Rtsp
             if (!player.Size(0, ref width, ref height) || width == 0 || height == 0)
                 return;
 
+#if VLCUNITY_ANDROID
+            if (videoTexture == null || videoTexture.width != (int)width ||
+                videoTexture.height != (int)height)
+            {
+                DestroyVideoTexture();
+                videoTexture = AndroidTextureHelper.CreateNativeTexture(
+                    player, linearTexture);
+                if (videoTexture == null) return;
+
+                videoTexture.name = "VLC Android Native RTSP Frame";
+                videoTexture.wrapMode = TextureWrapMode.Clamp;
+                videoTexture.filterMode = FilterMode.Bilinear;
+                androidOutputTexture = new RenderTexture(
+                    videoTexture.width,
+                    videoTexture.height,
+                    0,
+                    RenderTextureFormat.ARGB32)
+                {
+                    name = "VLC Android RTSP Display",
+                    wrapMode = TextureWrapMode.Clamp,
+                    filterMode = FilterMode.Bilinear,
+                };
+                androidOutputTexture.Create();
+                if (targetImage != null)
+                {
+                    targetImage.texture = androidOutputTexture;
+                    targetImage.enabled = true;
+                }
+                if (manageAspectRatio && aspectRatioFitter != null && height != 0)
+                    aspectRatioFitter.aspectRatio = (float)width / height;
+                ApplyUvOrientation();
+            }
+
+            if (!AndroidTextureHelper.UpdateTexture(videoTexture, player)) return;
+            Graphics.Blit(videoTexture, androidOutputTexture);
+            MarkFrame(VlcActiveVideoPath.AndroidNativeTexture, width, height);
+#else
             bool updated;
             IntPtr pointer = player.GetTexture(width, height, out updated);
             if (!updated || pointer == IntPtr.Zero) return;
@@ -652,6 +752,7 @@ namespace VlcD3D11Rtsp
             }
 
             MarkFrame(VlcActiveVideoPath.D3D11NativeTexture, width, height);
+#endif
         }
 
         private void UpdateCpuFrame()
@@ -731,12 +832,14 @@ namespace VlcD3D11Rtsp
         {
             string module = args.Module ?? string.Empty;
             string message = VlcLogSanitizer.Sanitize(args.Message);
+#if VLCUNITY_WINDOWS
             if (currentAttemptMode == VlcDecodeMode.Gpu &&
                 VlcLogSanitizer.IsHardwareDecoderEvidence(module, message))
             {
                 hardwareDecodeEvidence = module + ": " + message;
                 Interlocked.Exchange(ref hardwareConfirmedFlag, 1);
             }
+#endif
             if (VlcLogSanitizer.IsRelevantDiagnostic(module, message))
                 diagnosticMessages.Enqueue(module + ": " + message);
         }
@@ -868,6 +971,7 @@ namespace VlcD3D11Rtsp
                     player = null;
                 }
 
+#if VLCUNITY_WINDOWS
                 try
                 {
                     VlcNativeBridge.QueueRendererCleanup();
@@ -876,6 +980,7 @@ namespace VlcD3D11Rtsp
                 {
                     RecordCleanupWarning("Renderer cleanup request", exception);
                 }
+#endif
 
                 // Give Unity's render thread one frame to retire the native renderer
                 // before destroying its external Texture2D wrapper.
@@ -966,6 +1071,7 @@ namespace VlcD3D11Rtsp
                     player = null;
                 }
 
+#if VLCUNITY_WINDOWS
                 try
                 {
                     VlcNativeBridge.QueueRendererCleanup();
@@ -974,6 +1080,7 @@ namespace VlcD3D11Rtsp
                 {
                     RecordCleanupWarning("Immediate renderer cleanup", exception);
                 }
+#endif
             }
 
             if (media != null)
@@ -1016,6 +1123,18 @@ namespace VlcD3D11Rtsp
 
         private void DestroyVideoTexture()
         {
+#if VLCUNITY_ANDROID
+            if (androidOutputTexture != null)
+            {
+                if (targetImage != null && targetImage.texture == androidOutputTexture)
+                    targetImage.texture = null;
+                if (RenderTexture.active == androidOutputTexture)
+                    RenderTexture.active = null;
+                androidOutputTexture.Release();
+                Destroy(androidOutputTexture);
+                androidOutputTexture = null;
+            }
+#endif
             if (videoTexture == null) return;
             if (targetImage != null && targetImage.texture == videoTexture)
                 targetImage.texture = null;

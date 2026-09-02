@@ -256,7 +256,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4319cd5cd8cec8e468fa878be19d8660, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  url: rtsp://127.0.0.1:8554/live
+  url: rtsp://stream.strba.sk:1935/strba/VYHLAD_JAZERO.stream
   playOnEnable: 0
   forceRtspTcp: 1
   networkCachingMs: 500

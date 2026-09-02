@@ -1,4 +1,4 @@
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+#if (UNITY_ANDROID && !UNITY_EDITOR) || UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
 using System;
 using System.IO;
 using UnityEngine;
@@ -222,8 +222,10 @@ namespace VlcD3D11Rtsp
                     ? string.Empty
                     : player.HardwareDecodeEvidence,
                 nativeTextureWithoutCpuReadback = player != null &&
-                                                  player.ActiveVideoPath ==
-                                                  VlcActiveVideoPath.D3D11NativeTexture,
+                                                  (player.ActiveVideoPath ==
+                                                   VlcActiveVideoPath.D3D11NativeTexture ||
+                                                   player.ActiveVideoPath ==
+                                                   VlcActiveVideoPath.AndroidNativeTexture),
                 fallbackReason = player == null ? string.Empty : player.FallbackReason,
                 lastError = string.IsNullOrEmpty(error) && player != null
                     ? player.LastError

@@ -42,6 +42,21 @@ namespace VlcD3D11Rtsp.Editor
             Assert(HashFile(managedDll) == ExpectedLibVlcSharpHash,
                 "LibVLCSharp.dll does not match the pinned source artifact.");
 
+            AssertHikvisionAbi();
+            Assert(Resources.Load<Shader>("HikvisionYv12") != null,
+                "Hikvision YV12 shader is missing from Resources.");
+            string hikvisionRoot = Path.Combine(
+                projectRoot, "External", "HikvisionWindows");
+            if (Directory.Exists(hikvisionRoot))
+            {
+                string version;
+                string runtimeError;
+                Assert(HikvisionRtspPlayer.TryValidateInstalledRuntime(
+                        out version, out runtimeError), runtimeError);
+                Assert(version == "6.1.9.48",
+                    "Unexpected locally installed Hikvision SDK version: " + version);
+            }
+
             AssertSampleDisplay("Assets/VlcD3D11Rtsp/Demo/Demo.unity");
             AssertSampleDisplay("Assets/VlcD3D11Rtsp/Demo/Smoke.unity");
 
@@ -95,6 +110,8 @@ namespace VlcD3D11Rtsp.Editor
                     scenePath + " horizontal flip must default to enabled.");
                 Assert(serializedPlayer.FindProperty("flipVertically").boolValue,
                     scenePath + " vertical flip must default to enabled.");
+                Assert(player.Url == VlcRtspPlayer.DefaultTestUrl,
+                    scenePath + " player does not use the public default test URL.");
 
                 if (scenePath.EndsWith("/Demo.unity", StringComparison.OrdinalIgnoreCase))
                     AssertDemoLayout(scene);
@@ -111,12 +128,16 @@ namespace VlcD3D11Rtsp.Editor
             Dropdown dropdown = FindInScene<Dropdown>(scene);
             Button play = FindNamedInScene<Button>(scene, "Play");
             Button stop = FindNamedInScene<Button>(scene, "Stop");
+            VlcDemoController controller = FindInScene<VlcDemoController>(scene);
+            HikvisionRtspPlayer hikvision = FindInScene<HikvisionRtspPlayer>(scene);
 
             Assert(url != null && Approximately(url.GetComponent<RectTransform>().anchorMin,
                        new Vector2(0.01f, 0.53f)) &&
                    Approximately(url.GetComponent<RectTransform>().anchorMax,
                        new Vector2(0.47f, 0.94f)),
                 "Demo URL field anchors are incorrect.");
+            Assert(url != null && url.text == VlcRtspPlayer.DefaultTestUrl,
+                "Demo URL field does not use the public default test URL.");
             Assert(dropdown != null &&
                    Approximately(dropdown.GetComponent<RectTransform>().anchorMin,
                        new Vector2(0.48f, 0.53f)) &&
@@ -142,10 +163,31 @@ namespace VlcD3D11Rtsp.Editor
             Assert(dropdown.itemText != null &&
                    dropdown.itemText.horizontalOverflow == HorizontalWrapMode.Overflow,
                 "Demo dropdown items must not wrap.");
+            Assert(dropdown.options != null && dropdown.options.Count == 4 &&
+                   dropdown.options[3].text == "Hikvision SDK / PlayM4",
+                "Demo dropdown must serialize the independent Hikvision backend.");
             Assert(dropdown.template != null &&
-                   Mathf.Approximately(dropdown.template.sizeDelta.y, 90f) &&
+                   Mathf.Approximately(dropdown.template.sizeDelta.y, 120f) &&
                    Mathf.Approximately(dropdown.template.pivot.y, 1f),
-                "Demo dropdown template must be a 90 px top-pivoted list.");
+                "Demo dropdown template must be a 120 px top-pivoted list.");
+            Assert(controller != null, "Demo has no VlcDemoController.");
+            Assert(hikvision != null, "Demo has no independent HikvisionRtspPlayer.");
+            if (controller != null && hikvision != null)
+            {
+                var serializedController = new SerializedObject(controller);
+                Assert(serializedController.FindProperty("hikvisionPlayer")
+                           .objectReferenceValue == hikvision,
+                    "Demo controller does not serialize the Hikvision backend.");
+                var serializedHikvision = new SerializedObject(hikvision);
+                Assert(serializedHikvision.FindProperty("password") == null,
+                    "Hikvision password must never be serialized into the scene.");
+            }
+        }
+
+        private static void AssertHikvisionAbi()
+        {
+            string error;
+            Assert(HikvisionRtspPlayer.ValidateNativeAbi(out error), error);
         }
 
         private static T FindInScene<T>(Scene scene) where T : Component

@@ -1,4 +1,4 @@
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+#if (UNITY_ANDROID && !UNITY_EDITOR) || UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
 using System;
 using System.Runtime.InteropServices;
 using System.Text;

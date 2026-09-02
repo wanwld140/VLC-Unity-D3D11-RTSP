@@ -20,6 +20,8 @@ LICENSE -whitespace
 LICENSES/*.txt -whitespace
 
 *.dll binary
+*.so binary
+*.aar binary
 *.png binary
 *.jpg binary
 *.jpeg binary

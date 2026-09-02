@@ -41,5 +41,40 @@ license terms.
 
 ## Unity headers
 
+## LibVLC Android ARM64 runtime
+
+- Distributed artifacts:
+  - `Assets/Plugins/Android/VLCUnity/vlc-android-java.aar`
+  - `Assets/Plugins/Android/VLCUnity/arm64-v8a/libvlc.so`
+  - `Assets/Plugins/Android/VLCUnity/arm64-v8a/libVLCUnityPlugin.so`
+- Pinned source commits and SHA-256 values are recorded in
+  `docs/ANDROID_SOURCE_INFO.json`.
+- The VLC-Unity Android bridge is based on commit
+  `f2bbedd5bc84f3e1e979a543f4341a9b9c370dff`; the Android LibVLC build pins
+  VLC, vlc-android and libvlcjni commits separately.
+- Upstream license texts and the source package's notice mapping are retained
+  under `Assets/Plugins/VLCUnityRuntime/LICENSES`.
+- The recorded libvlcjni build used its `--license l` configuration. This does
+  not waive LGPL/GPL or contributed-library obligations. Audit the final
+  Android binary, provide required notices/source or relinking mechanism, and
+  obtain legal review before public distribution.
+
+## Unity headers
+
 The native source contains the Unity native plug-in interface headers shipped
 by the upstream VLC-Unity repository. Their original header notices apply.
+
+## Hikvision HCNetSDK / PlayCtrl (optional, user supplied)
+
+- Expected SDK: `CH-HCNetSDKV6.1.9.48_build20230410_win64`.
+- The repository contains interoperability source written against the official
+  headers, but does not contain Hikvision SDK DLLs or `HCNetSDKCom` binaries.
+- `scripts/setup-hikvision.ps1` copies a user's local official runtime into the
+  ignored `External/HikvisionWindows` directory. A Player build copies it only
+  when that local directory exists.
+- Hikvision binaries are proprietary and are not relicensed by this project's
+  MIT License. Obtain the SDK through an authorized Hikvision source and review
+  the vendor terms before distributing a build that contains those files.
+- Third-party open-source notices shipped inside the vendor SDK remain part of
+  the vendor package and do not establish redistribution rights for Hikvision's
+  proprietary binaries.
